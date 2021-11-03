@@ -1,0 +1,262 @@
+﻿using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Build.Locator;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
+using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.MSBuild;
+using System.Text;
+
+namespace PatternGenerator
+{
+
+    public class OpInfo
+    {
+        public string Name;
+        public string PatternName;
+        public List<ParameterSyntax> Params = new();
+    }
+
+    public class Receiver
+    {
+        private readonly Dictionary<string, List<OpInfo>> _candiateOps = new();
+
+        private readonly Dictionary<string, List<MethodDeclarationSyntax>> _candiateFuncs = new();
+
+        public Dictionary<string, List<OpInfo>> CandiateOps => _candiateOps;
+
+        public Dictionary<string, List<MethodDeclarationSyntax>> CandiateFuncs => _candiateFuncs;
+
+        private void CollectOpDef(SyntaxTree syntaxTree, string scope)
+        {
+            var root = syntaxTree.GetCompilationUnitRoot();
+            var records = from record in root.DescendantNodes().OfType<RecordDeclarationSyntax>()
+                          select record;
+            foreach (var record in records)
+            {
+                if (record.ParameterList is null)
+                    continue;
+                var op = new OpInfo()
+                {
+                    Name = record.Identifier.ValueText,
+                    PatternName = record.Identifier.ValueText + "Pattern",
+                    Params = record.ParameterList.Parameters.ToList()
+                };
+                Console.WriteLine($"Add Record {op.Name}");
+                if (!_candiateOps.TryGetValue(scope, out var list))
+                    _candiateOps.Add(scope, new());
+                _candiateOps[scope].Add(op);
+            }
+        }
+
+        private void CollectOpFunc(SyntaxTree syntaxTree, string scope)
+        {
+            var root = syntaxTree.GetCompilationUnitRoot();
+            var funcs = from func in root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                        select func;
+            foreach (var func in funcs)
+            {
+                Console.WriteLine($"Add Functional {func.Identifier.ValueText}");
+                if (!_candiateFuncs.TryGetValue(scope, out var list))
+                    _candiateFuncs.Add(scope, new());
+                _candiateFuncs[scope].Add(func);
+            }
+        }
+
+        public async Task VisitProject(Solution solution, Project project)
+        {
+
+            var compilation = await project.GetCompilationAsync();
+            foreach (DocumentId documentId in project.DocumentIds)
+            {
+                // Look up the snapshot for the original document in the latest forked solution.
+                Document document = solution.GetDocument(documentId);
+                Console.WriteLine("  " + document.FilePath);
+                if (!(document.Folders.Count >= 2 && document.Folders[document.Folders.Count - 2] == "IR"))
+                    continue;
+                var tree = await document.GetSyntaxTreeAsync();
+                if (document.FilePath.Contains("Functional.cs"))
+                {
+                    CollectOpFunc(tree, document.Folders.Last());
+                }
+                else
+                {
+                    CollectOpDef(tree, document.Folders.Last());
+                }
+            }
+        }
+    }
+
+    public static class Generator
+    {
+        private static void GenerateDefs(Receiver receiver, string filePath)
+        {
+
+            var baseType = SimpleBaseType(ParseTypeName("OpPattern"));
+            var patterns = new List<RecordDeclarationSyntax>();
+            var namespcaes = new List<NamespaceDeclarationSyntax>();
+            foreach (var (scope, ops) in receiver.CandiateOps)
+            {
+                foreach (var op in ops)
+                {
+                    var name = $"{op.Name}Pattern";
+
+                    var members = (from param in op.Params
+                                   let pname = param.Identifier.ValueText
+                                   let ptype = param.Type
+                                   select ParseMemberDeclaration($"public {name}({ptype} {pname}) : this(({op.Name} x) => {pname} == x.{pname}) {{ }}")
+                    );
+
+                    var pattern = RecordDeclaration(Token(SyntaxKind.SealedKeyword), name).
+                    AddModifiers(Token(SyntaxKind.PublicKeyword)).
+                    AddParameterListParameters(
+                      Parameter(Identifier("Cond")).
+                      WithType(ParseTypeName($"Func<{op.Name}, bool>"))
+                    ).
+                    AddBaseListTypes(baseType).
+                    WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken)).
+                    AddMembers(
+                      ParseMemberDeclaration($"public {name}({op.Name} {op.Name.ToLower()}) : this(x => x == {op.Name.ToLower()}) {{ }}"),
+                      ParseMemberDeclaration($"public bool MatchLeaf({op.Name} {op.Name.ToLower()}) => Cond({op.Name.ToLower()}) && MatchCheckedType({op.Name.ToLower()});")
+                    ).
+                    AddMembers(members.ToArray()).
+                    WithCloseBraceToken(Token(SyntaxKind.CloseBraceToken));
+
+                    patterns.Add(pattern);
+                }
+                var @namespace = NamespaceDeclaration(ParseName($"Nncase.Transfrom.Pattern.{scope}")).AddMembers(patterns.ToArray());
+                namespcaes.Add(@namespace);
+                patterns.Clear();
+            }
+
+            var compilationUnit = CompilationUnit().
+                AddMembers(namespcaes.ToArray()).
+                AddUsings(
+                  UsingDirective(ParseName("System")),
+                  UsingDirective(ParseName("System.Collections.Generic")),
+                  UsingDirective(ParseName("System.Collections.Immutable")),
+                  UsingDirective(ParseName("System.Linq")),
+                  UsingDirective(ParseName("System.Text")),
+                  UsingDirective(ParseName("System.Threading.Tasks")),
+                  UsingDirective(ParseName("Nncase.IR.Math")),
+                  UsingDirective(ParseName("Nncase.IR.NN")),
+                  UsingDirective(ParseName("Nncase.IR.Tensor"))
+                  ).
+                NormalizeWhitespace();
+
+            var sourceText = SyntaxTree(compilationUnit, encoding: Encoding.UTF8).GetText();
+            var file = File.Open(Path.Combine(filePath, "Pattern.Generated.cs"), FileMode.Create);
+            var writer = new StreamWriter(file);
+            writer.Write(sourceText);
+            writer.Close();
+        }
+
+        public static void GenerateFuncs(Receiver receiver, string filePath)
+        {
+            var functions = new List<MemberDeclarationSyntax>();
+            var classes = new List<ClassDeclarationSyntax>();
+            var dict = new Dictionary<string, string>() {
+              {"Expr" ,"ExprPattern"},
+              {"Call" ,"CallPattern"},
+            };
+            foreach (var (_, ops) in receiver.CandiateOps)
+            {
+                foreach (var op in ops)
+                {
+                    dict.TryAdd($"new {op.Name}", $"new {op.PatternName}");
+                }
+            }
+
+            foreach (var (scope, funcs) in receiver.CandiateFuncs)
+            {
+                foreach (var func in funcs)
+                {
+                    string newfunc = func.GetText().ToString();
+                    foreach (var (oldname, newname) in dict)
+                    {
+                        newfunc = newfunc.Replace(oldname, newname);
+                    }
+                    functions.Add(ParseMemberDeclaration(newfunc));
+                }
+                var @class = ClassDeclaration(Identifier(scope)).
+                         AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.StaticKeyword)).
+                         AddMembers(functions.ToArray());
+                functions.Clear();
+                classes.Add(@class);
+            }
+            var @namespace = NamespaceDeclaration(ParseName($"Nncase.Transform.Pattern.F")).AddMembers(classes.ToArray());
+            var compilationUnit = CompilationUnit().
+                AddMembers(@namespace).
+                AddUsings(
+                  UsingDirective(ParseName("System")),
+                  UsingDirective(ParseName("System.Collections.Generic")),
+                  UsingDirective(ParseName("System.Linq")),
+                  UsingDirective(ParseName("System.Text")),
+                  UsingDirective(ParseName("System.Threading.Tasks")),
+                  UsingDirective(ParseName("Nncase.Transform.Pattern.Math")),
+                  UsingDirective(ParseName("Nncase.Transform.Pattern.NN")),
+                  UsingDirective(ParseName("Nncase.Transform.Pattern.Tensor")),
+                  UsingDirective(ParseName("Nncase.IR")),
+                  UsingDirective(ParseName("Nncase.IR.Math")),
+                  UsingDirective(ParseName("Nncase.IR.NN")),
+                  UsingDirective(ParseName("Nncase.IR.Tensor"))
+                  ).
+                NormalizeWhitespace();
+
+            var sourceText = SyntaxTree(compilationUnit, encoding: Encoding.UTF8).GetText();
+            var file = File.Open(Path.Combine(filePath, "Pattern.Functional.Generated.cs"), FileMode.Create);
+            var writer = new StreamWriter(file);
+            writer.Write(sourceText);
+            writer.Close();
+        }
+
+        public static void Generate(Receiver receiver, string filePath)
+        {
+            GenerateDefs(receiver, filePath);
+            GenerateFuncs(receiver, filePath);
+        }
+    }
+
+    class Program
+    {
+        static async Task Main(string[] args)
+        {
+            // Console.WriteLine("Hello World!");
+            // Locate and register the default instance of MSBuild installed on this machine.
+            MSBuildLocator.RegisterDefaults();
+
+            // The test solution is copied to the output directory when you build this sample.
+            MSBuildWorkspace workspace = MSBuildWorkspace.Create();
+
+            // Open the solution within the workspace.
+            Solution solution = await workspace.OpenSolutionAsync(args[0]);
+
+            var reciever = new Receiver();
+            foreach (var projectId in solution.ProjectIds)
+            {
+                // Look up the snapshot for the original project in the latest forked solution.
+                Project project = solution.GetProject(projectId);
+                Console.WriteLine(project.Name);
+                var compilation = await project.GetCompilationAsync();
+                switch (project.Name)
+                {
+                    case "Nncase.Core":
+                        await reciever.VisitProject(solution, project);
+                        break;
+                    case "Nncase.IR":
+                        await reciever.VisitProject(solution, project);
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            Generator.Generate(reciever, "");
+        }
+    }
+}
