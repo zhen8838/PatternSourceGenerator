@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -156,6 +156,70 @@ namespace PatternGenerator
             writer.Close();
         }
 
+        public static void GenerateOpVisits(Receiver receiver, string filePath)
+        {
+            var baseType = SimpleBaseType(ParseTypeName("ExprPattern"));
+            var arms = new List<SwitchExpressionArmSyntax>();
+            foreach (var (scope, ops) in receiver.CandiateOps)
+            {
+                foreach (var op in ops)
+                {
+                    var lhsDeclar = Subpattern(DeclarationPattern(ParseTypeName(op.PatternName), SingleVariableDesignation(Identifier(op.PatternName.ToLower()))));
+                    var rhsDeclar = Subpattern(DeclarationPattern(ParseTypeName(op.Name), SingleVariableDesignation(Identifier(op.Name.ToLower()))));
+                    var combineDeclar = RecursivePattern().AddPositionalPatternClauseSubpatterns(lhsDeclar, rhsDeclar);
+                    var invocation = ParseExpression($"{op.PatternName.ToLower()}.MatchLeaf({op.Name.ToLower()})");
+                    arms.Add(SwitchExpressionArm(combineDeclar, invocation));
+                }
+            }
+            arms.Add(SwitchExpressionArm(
+                     RecursivePattern().
+                     AddPositionalPatternClauseSubpatterns(
+                       Subpattern(DiscardPattern()),
+                       Subpattern(DiscardPattern())),
+                     ParseExpression("false")));
+            var @switch = SwitchExpression(
+                  ParseExpression("(this, op)"),
+                  SeparatedList(arms));
+            var matchMethod = MethodDeclaration(ParseTypeName("bool"), "MatchLeaf")
+                .AddModifiers(Token(SyntaxKind.PublicKeyword))
+                .AddParameterListParameters(
+                    Parameter(Identifier("op")).WithType(ParseTypeName("Op")))
+                .WithLeadingTrivia(LineFeed)
+                .WithExpressionBody(ArrowExpressionClause(@switch))
+                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken));
+
+            var @record = RecordDeclaration(Token(SyntaxKind.RecordKeyword), "OpPattern")
+                          .AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.AbstractKeyword))
+                          .AddBaseListTypes(SimpleBaseType(ParseTypeName("ExprPattern")))
+                          .WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken))
+                          .AddMembers(matchMethod)
+                          .WithCloseBraceToken(Token(SyntaxKind.CloseBraceToken));
+
+            var @namespace = NamespaceDeclaration(ParseName("Nncase.Transform.Pattern"))
+                .AddMembers(@record);
+
+            var compilationUnit = CompilationUnit()
+                .AddMembers(@namespace)
+                .AddUsings(
+            UsingDirective(ParseName("System")),
+            UsingDirective(ParseName("System.Collections.Generic")),
+            UsingDirective(ParseName("System.Collections.Immutable")),
+            UsingDirective(ParseName("System.Linq")),
+            UsingDirective(ParseName("Nncase.IR")),
+            UsingDirective(ParseName("Nncase.IR.NN")),
+            UsingDirective(ParseName("Nncase.IR.Math")),
+            UsingDirective(ParseName("Nncase.IR.Tensors")),
+            UsingDirective(ParseName("Nncase.Transform.Pattern.NN")),
+            UsingDirective(ParseName("Nncase.Transform.Pattern.Math")),
+            UsingDirective(ParseName("Nncase.Transform.Pattern.Tensors")))
+                .NormalizeWhitespace();
+            var syntaxTree = SyntaxTree(compilationUnit, encoding: Encoding.UTF8);
+            var file = File.Open(Path.Combine(filePath, "OpPattern.Generated.cs"), FileMode.Create);
+            var writer = new StreamWriter(file);
+            writer.Write(syntaxTree.GetText());
+            writer.Close();
+        }
+
         public static void GenerateFuncs(Receiver receiver, string filePath)
         {
             var functions = new List<MemberDeclarationSyntax>();
@@ -219,6 +283,7 @@ namespace PatternGenerator
         {
             GenerateDefs(receiver, filePath);
             GenerateFuncs(receiver, filePath);
+            GenerateOpVisits(receiver, filePath);
         }
     }
 
@@ -226,6 +291,11 @@ namespace PatternGenerator
     {
         static async Task Main(string[] args)
         {
+            if (args.Length < 1)
+            {
+                throw new InvalidProgramException("Usage: dotnet run - nncase/nncase.sln nncase/src/Nncase.EGraph/Transform/Pattern");
+            }
+
             // Console.WriteLine("Hello World!");
             // Locate and register the default instance of MSBuild installed on this machine.
             MSBuildLocator.RegisterDefaults();
@@ -256,7 +326,7 @@ namespace PatternGenerator
                 }
             }
 
-            Generator.Generate(reciever, "");
+            Generator.Generate(reciever, args.Length == 2 ? args[1] : "");
         }
     }
 }
