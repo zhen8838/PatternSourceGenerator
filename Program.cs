@@ -112,8 +112,8 @@ namespace PatternGenerator
                                    select ParseMemberDeclaration($"public {name}({ptype} {pname}) : this(({op.Name} x) => {pname} == x.{pname}) {{ }}")
                     );
 
-                    var pattern = RecordDeclaration(Token(SyntaxKind.SealedKeyword), name).
-                    AddModifiers(Token(SyntaxKind.PublicKeyword)).
+                    var pattern = RecordDeclaration(Token(SyntaxKind.RecordKeyword), name).
+                    AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.SealedKeyword)).
                     AddParameterListParameters(
                       Parameter(Identifier("Cond")).
                       WithType(ParseTypeName($"Func<{op.Name}, bool>"))
@@ -122,14 +122,15 @@ namespace PatternGenerator
                     WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken)).
                     AddMembers(
                       ParseMemberDeclaration($"public {name}({op.Name} {op.Name.ToLower()}) : this(x => x == {op.Name.ToLower()}) {{ }}"),
-                      ParseMemberDeclaration($"public bool MatchLeaf({op.Name} {op.Name.ToLower()}) => Cond({op.Name.ToLower()}) && MatchCheckedType({op.Name.ToLower()});")
+                      ParseMemberDeclaration($"public bool MatchLeaf({op.Name} {op.Name.ToLower()}) => Cond({op.Name.ToLower()}) && MatchCheckedType({op.Name.ToLower()});"),
+                      ParseMemberDeclaration($"public {name}() : this(({op.Name} x) => true) {{ }}")
                     ).
                     AddMembers(members.ToArray()).
                     WithCloseBraceToken(Token(SyntaxKind.CloseBraceToken));
 
                     patterns.Add(pattern);
                 }
-                var @namespace = NamespaceDeclaration(ParseName($"Nncase.Transfrom.Pattern.{scope}")).AddMembers(patterns.ToArray());
+                var @namespace = NamespaceDeclaration(ParseName($"Nncase.Transform.Pattern.{scope}")).AddMembers(patterns.ToArray());
                 namespcaes.Add(@namespace);
                 patterns.Clear();
             }
@@ -145,12 +146,12 @@ namespace PatternGenerator
                   UsingDirective(ParseName("System.Threading.Tasks")),
                   UsingDirective(ParseName("Nncase.IR.Math")),
                   UsingDirective(ParseName("Nncase.IR.NN")),
-                  UsingDirective(ParseName("Nncase.IR.Tensor"))
+                  UsingDirective(ParseName("Nncase.IR.Tensors"))
                   ).
                 NormalizeWhitespace();
 
             var sourceText = SyntaxTree(compilationUnit, encoding: Encoding.UTF8).GetText();
-            var file = File.Open(Path.Combine(filePath, "Pattern.Generated.cs"), FileMode.Create);
+            var file = File.Open(Path.Combine(filePath, "Generated.OpsPatten.cs"), FileMode.Create);
             var writer = new StreamWriter(file);
             writer.Write(sourceText);
             writer.Close();
@@ -214,7 +215,7 @@ namespace PatternGenerator
             UsingDirective(ParseName("Nncase.Transform.Pattern.Tensors")))
                 .NormalizeWhitespace();
             var syntaxTree = SyntaxTree(compilationUnit, encoding: Encoding.UTF8);
-            var file = File.Open(Path.Combine(filePath, "OpPattern.Generated.cs"), FileMode.Create);
+            var file = File.Open(Path.Combine(filePath, "Generated.OpPattern.cs"), FileMode.Create);
             var writer = new StreamWriter(file);
             writer.Write(syntaxTree.GetText());
             writer.Close();
@@ -227,6 +228,7 @@ namespace PatternGenerator
             var dict = new Dictionary<string, string>() {
               {"Expr" ,"ExprPattern"},
               {"Call" ,"CallPattern"},
+              {"Tuple" ,"TuplePattern"},
             };
             foreach (var (_, ops) in receiver.CandiateOps)
             {
@@ -257,23 +259,22 @@ namespace PatternGenerator
             var compilationUnit = CompilationUnit().
                 AddMembers(@namespace).
                 AddUsings(
-                  UsingDirective(ParseName("System")),
                   UsingDirective(ParseName("System.Collections.Generic")),
                   UsingDirective(ParseName("System.Linq")),
                   UsingDirective(ParseName("System.Text")),
                   UsingDirective(ParseName("System.Threading.Tasks")),
                   UsingDirective(ParseName("Nncase.Transform.Pattern.Math")),
                   UsingDirective(ParseName("Nncase.Transform.Pattern.NN")),
-                  UsingDirective(ParseName("Nncase.Transform.Pattern.Tensor")),
+                  UsingDirective(ParseName("Nncase.Transform.Pattern.Tensors")),
                   UsingDirective(ParseName("Nncase.IR")),
                   UsingDirective(ParseName("Nncase.IR.Math")),
                   UsingDirective(ParseName("Nncase.IR.NN")),
-                  UsingDirective(ParseName("Nncase.IR.Tensor"))
+                  UsingDirective(ParseName("Nncase.IR.Tensors"))
                   ).
                 NormalizeWhitespace();
 
             var sourceText = SyntaxTree(compilationUnit, encoding: Encoding.UTF8).GetText();
-            var file = File.Open(Path.Combine(filePath, "Pattern.Functional.Generated.cs"), FileMode.Create);
+            var file = File.Open(Path.Combine(filePath, "Generated.Functional.cs"), FileMode.Create);
             var writer = new StreamWriter(file);
             writer.Write(sourceText);
             writer.Close();
