@@ -3,6 +3,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -20,6 +21,8 @@ namespace PatternGenerator
         public string Name;
         public string PatternName;
         public List<ParameterSyntax> Params = new();
+
+        public List<VariableDeclaratorSyntax> ParamInfos = new();
     }
 
     public class Receiver
@@ -45,7 +48,10 @@ namespace PatternGenerator
                 {
                     Name = record.Identifier.ValueText,
                     PatternName = record.Identifier.ValueText + "Pattern",
-                    Params = record.ParameterList.Parameters.ToList()
+                    Params = record.ParameterList.Parameters.ToList(),
+                    ParamInfos = (from declar in record.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                                  where (declar is VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax { Parent: FieldDeclarationSyntax { } field } parent })
+                                  select declar).ToList()
                 };
                 Console.WriteLine($"Add Record {op.Name}");
                 if (!_candiateOps.TryGetValue(scope, out var list))
@@ -94,6 +100,66 @@ namespace PatternGenerator
 
     public static class Generator
     {
+
+
+        private static void GenerateWrappers(Receiver receiver, string filePath)
+        {
+            var paramInfoType = ParseTypeName("ParameterInfo");
+            var wrappers = new List<RecordDeclarationSyntax>();
+            var namespcaes = new List<NamespaceDeclarationSyntax>();
+            foreach (var (scope, ops) in receiver.CandiateOps)
+            {
+                foreach (var op in ops)
+                {
+                    var name = $"{op.Name}Wrapper";
+
+                    var members = (from info in op.ParamInfos
+                                   let pname = info.Identifier.ValueText
+                                   select ParseMemberDeclaration($"public ExprPattern {pname} => Pattern[{op.Name}.{pname}];")
+                    );
+
+                    var wrapper = RecordDeclaration(Token(SyntaxKind.RecordKeyword), name).
+                    AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.SealedKeyword)).
+                    AddParameterListParameters(
+                      Parameter(Identifier("Pattern")).
+                      WithType(ParseTypeName("CallPattern"))
+                    ).
+                    WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken)).
+                    AddMembers(members.ToArray()).
+                    AddMembers(
+                      // ParseMemberDeclaration($"public static implicit operator ExprPattern({name} warper) => warper.Pattern;"),
+                      ParseMemberDeclaration($"public static implicit operator CallPattern({name} warper) => warper.Pattern;")
+                    ).
+                    WithCloseBraceToken(Token(SyntaxKind.CloseBraceToken));
+
+                    wrappers.Add(wrapper);
+                }
+                var @namespace = NamespaceDeclaration(ParseName($"Nncase.Transform.Pattern.{scope}")).AddMembers(wrappers.ToArray());
+                namespcaes.Add(@namespace);
+                wrappers.Clear();
+            }
+
+            var compilationUnit = CompilationUnit().
+                AddMembers(namespcaes.ToArray()).
+                AddUsings(
+                  UsingDirective(ParseName("System")),
+                  UsingDirective(ParseName("System.Collections.Generic")),
+                  UsingDirective(ParseName("System.Collections.Immutable")),
+                  UsingDirective(ParseName("System.Linq")),
+                  UsingDirective(ParseName("System.Text")),
+                  UsingDirective(ParseName("System.Threading.Tasks")),
+                  UsingDirective(ParseName("Nncase.IR.Math")),
+                  UsingDirective(ParseName("Nncase.IR.NN")),
+                  UsingDirective(ParseName("Nncase.IR.Tensors"))
+                  ).
+                NormalizeWhitespace();
+
+            var sourceText = SyntaxTree(compilationUnit, encoding: Encoding.UTF8).GetText();
+            var file = File.Open(Path.Combine(filePath, "Generated.OpsWrapper.cs"), FileMode.Create);
+            var writer = new StreamWriter(file);
+            writer.Write(sourceText);
+            writer.Close();
+        }
         private static void GenerateDefs(Receiver receiver, string filePath)
         {
 
@@ -221,10 +287,50 @@ namespace PatternGenerator
             writer.Close();
         }
 
+        private static readonly Dictionary<string, string> returnDict = new()
+        {
+            { "Abs", "Unary" },
+            { "Ceil", "Unary" },
+            { "Cos", "Unary" },
+            { "Exp", "Unary" },
+            { "Floor", "Unary" },
+            { "Log", "Unary" },
+            { "Neg", "Unary" },
+            { "Round", "Unary" },
+            { "Rsqrt", "Unary" },
+            { "Sin", "Unary" },
+            { "Sqrt", "Unary" },
+            { "Square", "Unary" },
+            { "Tanh", "Unary" },
+            { "BitwiseNot", "Unary" },
+            { "LogicalNot", "Unary" },
+            { "Add", "Binary" },
+            { "Sub", "Binary" },
+            { "Mul", "Binary" },
+            { "Div", "Binary" },
+            { "Mod", "Binary" },
+            { "Min", "Binary" },
+            { "Max", "Binary" },
+            { "Pow", "Binary" },
+            { "BitwiseAnd", "Binary" },
+            { "BitwiseOr", "Binary" },
+            { "BitwiseXor", "Binary" },
+            { "LogicalAnd", "Binary" },
+            { "LogicalOr", "Binary" },
+            { "LogicalXor", "Binary" },
+            { "FloorDiv", "Unary" },
+            { "FloorMod", "Binary" },
+            { "ReduceMean", "Reduce" },
+            { "ReduceMin", "Reduce" },
+            { "ReduceMax", "Reduce" },
+            { "ReduceSum", "Reduce" },
+        };
+
         public static void GenerateFuncs(Receiver receiver, string filePath)
         {
             var functions = new List<MemberDeclarationSyntax>();
             var classes = new List<ClassDeclarationSyntax>();
+            var regex = new Regex(@"(new CallPattern(.*)(?=;))", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             var dict = new Dictionary<string, string>() {
               {"Expr" ,"ExprPattern"},
               {"Call" ,"CallPattern"},
@@ -243,10 +349,17 @@ namespace PatternGenerator
                 foreach (var func in funcs)
                 {
                     string newfunc = func.GetText().ToString();
+                    var funcName = func.Identifier.ValueText;
                     foreach (var (oldname, newname) in dict)
                     {
                         newfunc = newfunc.Replace(oldname, newname);
                     }
+                    if (!returnDict.TryGetValue(funcName, out var newReturnName))
+                    {
+                        newReturnName = funcName;
+                    }
+                    newfunc = newfunc.Replace("public static CallPattern", $"public static {newReturnName}Wrapper");
+                    newfunc = regex.Replace(newfunc, $"new {funcName}Wrapper($&)");
                     functions.Add(ParseMemberDeclaration(newfunc));
                 }
                 var @class = ClassDeclaration(Identifier(scope)).
@@ -282,6 +395,7 @@ namespace PatternGenerator
 
         public static void Generate(Receiver receiver, string filePath)
         {
+            GenerateWrappers(receiver, filePath);
             GenerateDefs(receiver, filePath);
             GenerateFuncs(receiver, filePath);
             GenerateOpVisits(receiver, filePath);
