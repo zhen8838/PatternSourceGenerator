@@ -234,7 +234,7 @@ namespace PatternGenerator
             {
                 foreach (var op in ops)
                 {
-                    dict.TryAdd($"new {op.Name}", $"new {op.PatternName}");
+                    dict.TryAdd($"new {op.Name}(", $"new {op.PatternName}(");
                 }
             }
 
