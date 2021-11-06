@@ -373,7 +373,7 @@ namespace PatternGenerator
                     functions.Add(ParseMemberDeclaration(newfunc));
                 }
                 var @class = ClassDeclaration(Identifier(scope)).
-                         AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.StaticKeyword)).
+                         AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.StaticKeyword), Token(SyntaxKind.PartialKeyword)).
                          AddMembers(functions.ToArray());
                 functions.Clear();
                 classes.Add(@class);
