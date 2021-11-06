@@ -104,6 +104,7 @@ namespace PatternGenerator
 
         private static void GenerateWrappers(Receiver receiver, string filePath)
         {
+            var baseType = ParseTypeName("PatternWrapper");
             var paramInfoType = ParseTypeName("ParameterInfo");
             var wrappers = new List<RecordDeclarationSyntax>();
             var namespcaes = new List<NamespaceDeclarationSyntax>();
@@ -113,10 +114,16 @@ namespace PatternGenerator
                 {
                     var name = $"{op.Name}Wrapper";
 
-                    var members = (from info in op.ParamInfos
-                                   let pname = info.Identifier.ValueText
-                                   select ParseMemberDeclaration($"public ExprPattern {pname} => Pattern[{op.Name}.{pname}];")
-                    );
+                    var members = op.ParamInfos.SelectMany(info =>
+                      {
+                          var pname = info.Identifier.ValueText;
+                          return new[]{
+                      ParseMemberDeclaration($"public ExprPattern {pname}Pat() => Pattern[{op.Name}.{pname}];"),
+                      ParseMemberDeclaration($"public T {pname}Pat<T>() where T : ExprPattern => (T){pname}Pat();"),
+                      ParseMemberDeclaration($"public Expr {pname}() => GetCast<Expr>({pname}Pat());"),
+                      ParseMemberDeclaration($"public T {pname}<T>() where T : Expr => GetCast<T>({pname}Pat());")
+                          };
+                      });
 
                     var wrapper = RecordDeclaration(Token(SyntaxKind.RecordKeyword), name).
                     AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.SealedKeyword)).
@@ -124,6 +131,7 @@ namespace PatternGenerator
                       Parameter(Identifier("Pattern")).
                       WithType(ParseTypeName("CallPattern"))
                     ).
+                    AddBaseListTypes(SimpleBaseType(baseType)).
                     WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken)).
                     AddMembers(members.ToArray()).
                     AddMembers(
@@ -148,6 +156,7 @@ namespace PatternGenerator
                   UsingDirective(ParseName("System.Linq")),
                   UsingDirective(ParseName("System.Text")),
                   UsingDirective(ParseName("System.Threading.Tasks")),
+                  UsingDirective(ParseName("Nncase.IR")),
                   UsingDirective(ParseName("Nncase.IR.Math")),
                   UsingDirective(ParseName("Nncase.IR.NN")),
                   UsingDirective(ParseName("Nncase.IR.Tensors"))
@@ -210,6 +219,7 @@ namespace PatternGenerator
                   UsingDirective(ParseName("System.Linq")),
                   UsingDirective(ParseName("System.Text")),
                   UsingDirective(ParseName("System.Threading.Tasks")),
+                  UsingDirective(ParseName("Nncase.IR")),
                   UsingDirective(ParseName("Nncase.IR.Math")),
                   UsingDirective(ParseName("Nncase.IR.NN")),
                   UsingDirective(ParseName("Nncase.IR.Tensors"))
