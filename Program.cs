@@ -114,7 +114,7 @@ namespace PatternGenerator
                 {
                     var name = $"{op.Name}Wrapper";
 
-                    var members = op.ParamInfos.SelectMany(info =>
+                    var getInputMembers = op.ParamInfos.SelectMany(info =>
                       {
                           var pname = info.Identifier.ValueText;
                           return new[]{
@@ -125,6 +125,11 @@ namespace PatternGenerator
                           };
                       });
 
+                    var getEnumMembers = (from param in op.Params
+                                          let pname = param.Identifier.ValueText
+                                          let ptype = param.Type
+                                          select ParseMemberDeclaration($"public {ptype} {pname} => (({op.Name})GetCast<Call>(this).Target).{pname};"));
+
                     var wrapper = RecordDeclaration(Token(SyntaxKind.RecordKeyword), name).
                     AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.SealedKeyword)).
                     AddParameterListParameters(
@@ -133,9 +138,9 @@ namespace PatternGenerator
                     ).
                     AddBaseListTypes(SimpleBaseType(baseType)).
                     WithOpenBraceToken(Token(SyntaxKind.OpenBraceToken)).
-                    AddMembers(members.ToArray()).
+                    AddMembers(getInputMembers.ToArray()).
+                    AddMembers(getEnumMembers.ToArray()).
                     AddMembers(
-                      // ParseMemberDeclaration($"public static implicit operator ExprPattern({name} warper) => warper.Pattern;"),
                       ParseMemberDeclaration($"public static implicit operator CallPattern({name} warper) => warper.Pattern;")
                     ).
                     WithCloseBraceToken(Token(SyntaxKind.CloseBraceToken));
